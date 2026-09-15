@@ -1,0 +1,12 @@
+[workspace]
+members = [
+    "programs/streamdividend"
+]
+resolver = "2"
+
+[profile.release]
+overflow-checks = true
+
+[workspace.dependencies]
+anchor-lang = "0.29.0"
+anchor-spl = "0.29.0"
