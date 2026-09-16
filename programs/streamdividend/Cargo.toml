@@ -21,11 +21,11 @@ web-sys = "=0.3.69"
 wasm-bindgen = "=0.2.92"  # newer wasm-bindgen uses std::panic::panic_any, cfg-gated out in the SBF stdlib  # pin: solana-program 1.18 needs implicit futures-util feature (dropped in newer js-sys)
 anchor-lang = { version = "0.29.0", features = ["init-if-needed"] }
 proc-macro-crate = "=1.3.1"  # pin: v3 pulls toml_edit 0.25 (edition 2024), unsupported by SBF cargo
-# Pin: solana-program 1.18 allows borsh ^1 which now resolves to 1.8.1 ->
-# borsh-derive -> proc-macro-crate 3.5.0 (edition 2024, SBF cargo 1.75 cannot
-# borsh-derive 1.1.2 is the last 1.x on proc-macro-crate ^2 (edition
-# 2021); everything >= 1.1.3 moves to pmc ^3.
-borsh = "=1.1.2"
+# NOTE: no direct `borsh` dep — anchor 0.29's prelude re-exports the borsh
+# traits; a direct dep collides with them (E0659 ambiguous `AnchorSerialize`).
+# solana-program is needed for invoke_signed/Instruction/Pubkey in token_ix.rs
+# (anchor-lang depends on it but does not re-export the instruction module).
+solana-program = "=1.17.14"
 # SBF toolchain pins (SBF cargo 1.75 stops at edition-2021 manifests).
 # Post-2025 releases of these transitive crates are edition 2024 and cannot
 # be parsed. Each pin restores the last known-good version; they are already

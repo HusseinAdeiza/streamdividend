@@ -32,7 +32,13 @@ pub fn transfer(
         accounts: vec![
             AccountMeta::new(*from, false),
             AccountMeta::new(*to, false),
-            AccountMeta::new(*authority, false),
+            // Authority must be is_signer=true: for a CPI instruction the token
+            // program only sees it as signed if its meta says so (a real signer
+            // matches the top-level tx signature; a PDA is proven via
+            // invoke_signed signer_seeds).
+            AccountMeta::new(*authority, true),
+            // SPL Token Transfer requires the token program as the 4th account.
+            AccountMeta::new_readonly(*program_id, false),
         ],
         data,
     }

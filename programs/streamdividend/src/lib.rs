@@ -87,13 +87,13 @@ fn mint_token_program(mint: &AccountInfo) -> Result<&'static Pubkey> {
     }
 }
 
-/// Mint field of a token account (bytes 32..64 of account data).
+/// Mint field of a token account (bytes 0..32 of account data).
 fn token_account_mint(acc: &AccountInfo) -> Result<Pubkey> {
     let d = acc.try_borrow_data()?;
     if d.len() < 64 {
         return Err(ErrorCode::InvalidTokenAccount.into());
     }
-    Ok(Pubkey::new_from_array(d[32..64].try_into().unwrap()))
+    Ok(Pubkey::new_from_array(d[0..32].try_into().unwrap()))
 }
 
 #[program]
@@ -129,7 +129,7 @@ pub mod streamdividend {
 
         // Defensive: both accounts must be for the vault's xStock mint and
         // owned by that mint's token program (prevents cross-mint deposits).
-        require!(ctx.accounts.vault_xstock.owner == *token_program, ErrorCode::InvalidTokenAccount);
+        require!(*ctx.accounts.vault_xstock.owner == *token_program, ErrorCode::InvalidTokenAccount);
         require!(token_account_mint(&ctx.accounts.vault_xstock)? == vault.xstock_mint, ErrorCode::InvalidTokenAccount);
         require!(token_account_mint(&ctx.accounts.user_xstock)? == vault.xstock_mint, ErrorCode::InvalidTokenAccount);
 
@@ -154,6 +154,7 @@ pub mod streamdividend {
                 ctx.accounts.user_xstock.to_account_info(),
                 ctx.accounts.vault_xstock.to_account_info(),
                 ctx.accounts.user.to_account_info(),
+                ctx.accounts.token_program.to_account_info(),
             ],
             &[],
         )?;
@@ -188,6 +189,8 @@ pub mod streamdividend {
 
     pub fn withdraw(ctx: Context<Withdraw>, shares: u64) -> Result<()> {
         require!(shares > 0, ErrorCode::ZeroAmount);
+        let vault_key = ctx.accounts.vault.key();
+        let vault_info = ctx.accounts.vault.to_account_info();
         let vault = &mut ctx.accounts.vault;
         let user_state = &mut ctx.accounts.user_state;
         require!(user_state.shares >= shares, ErrorCode::InsufficientShares);
@@ -204,7 +207,7 @@ pub mod streamdividend {
                 &TOKEN_PROGRAM_ID,
                 &ctx.accounts.vault_dividend.key(),
                 &ctx.accounts.user_dividend.key(),
-                &ctx.accounts.vault.key(),
+                &vault_key,
                 earned,
             );
             invoke_signed(
@@ -212,7 +215,8 @@ pub mod streamdividend {
                 &[
                     ctx.accounts.vault_dividend.to_account_info(),
                     ctx.accounts.user_dividend.to_account_info(),
-                    ctx.accounts.vault.to_account_info(),
+                    vault_info.clone(),
+                    ctx.accounts.usdc_token_program.to_account_info(),
                 ],
                 &[seeds],
             )?;
@@ -237,7 +241,7 @@ pub mod streamdividend {
             token_program,
             &ctx.accounts.vault_xstock.key(),
             &ctx.accounts.user_xstock.key(),
-            &ctx.accounts.vault.key(),
+            &vault_key,
             xstock_out,
         );
         invoke_signed(
@@ -245,7 +249,8 @@ pub mod streamdividend {
             &[
                 ctx.accounts.vault_xstock.to_account_info(),
                 ctx.accounts.user_xstock.to_account_info(),
-                ctx.accounts.vault.to_account_info(),
+                vault_info.clone(),
+                ctx.accounts.token_program.to_account_info(),
             ],
             &[seeds],
         )?;
@@ -283,6 +288,7 @@ pub mod streamdividend {
                 ctx.accounts.admin_dividend.to_account_info(),
                 ctx.accounts.vault_dividend.to_account_info(),
                 ctx.accounts.authority.to_account_info(),
+                ctx.accounts.token_program.to_account_info(),
             ],
             &[],
         )?;
@@ -316,6 +322,8 @@ pub mod streamdividend {
         let amount = earned_amount(&ctx.accounts.user_state, &ctx.accounts.vault)?;
         require!(amount > 0, ErrorCode::NothingToClaim);
 
+        let vault_key = ctx.accounts.vault.key();
+        let vault_info = ctx.accounts.vault.to_account_info();
         let vault = &mut ctx.accounts.vault;
         let bump = vault.bump;
         let auth_bytes = vault.authority.to_bytes();
@@ -324,7 +332,7 @@ pub mod streamdividend {
             &TOKEN_PROGRAM_ID,
             &ctx.accounts.vault_dividend.key(),
             &ctx.accounts.user_dividend.key(),
-            &ctx.accounts.vault.key(),
+            &vault_key,
             amount,
         );
         invoke_signed(
@@ -332,7 +340,8 @@ pub mod streamdividend {
             &[
                 ctx.accounts.vault_dividend.to_account_info(),
                 ctx.accounts.user_dividend.to_account_info(),
-                ctx.accounts.vault.to_account_info(),
+                vault_info.clone(),
+                ctx.accounts.token_program.to_account_info(),
             ],
             &[seeds],
         )?;
@@ -441,8 +450,10 @@ pub struct Initialize<'info> {
     )]
     pub vault: Account<'info, Vault>,
     /// Tokenized stock mint (Token-v3 or Token-2022).
+    /// CHECK: manually validated in the handler (mint match / owner / authority)
     pub xstock_mint: AccountInfo<'info>,
     /// Dividend mint — USDC (Token-v3).
+    /// CHECK: manually validated in the handler (mint match / owner / authority)
     pub dividend_mint: AccountInfo<'info>,
     pub system_program: Program<'info, System>,
 }
@@ -463,13 +474,19 @@ pub struct Deposit<'info> {
     pub user_state: Account<'info, UserState>,
     /// User's xStock account (v3 or 2022, must match the vault's xstock mint).
     #[account(mut)]
+    /// CHECK: manually validated in the handler (mint match / owner / authority)
     pub user_xstock: AccountInfo<'info>,
     /// Vault's xStock account (owned by the vault PDA).
     #[account(mut)]
+    /// CHECK: manually validated in the handler (mint match / owner / authority)
     pub vault_xstock: AccountInfo<'info>,
     /// The xStock mint — must equal the vault's.
     #[account(address = vault.xstock_mint)]
+    /// CHECK: manually validated in the handler (mint match / owner / authority)
     pub xstock_mint: AccountInfo<'info>,
+    pub system_program: Program<'info, System>,
+    /// CHECK: client passes the xStock mint's token program (v3 or 2022).
+    pub token_program: AccountInfo<'info>,
 }
 
 #[derive(Accounts)]
@@ -485,16 +502,25 @@ pub struct Withdraw<'info> {
     )]
     pub user_state: Account<'info, UserState>,
     #[account(mut)]
+    /// CHECK: manually validated in the handler (mint match / owner / authority)
     pub user_xstock: AccountInfo<'info>,
     #[account(mut)]
+    /// CHECK: manually validated in the handler (mint match / owner / authority)
     pub vault_xstock: AccountInfo<'info>,
     /// User's USDC account — receives accrued dividend on the way out.
     #[account(mut)]
+    /// CHECK: manually validated in the handler (mint match / owner / authority)
     pub user_dividend: AccountInfo<'info>,
     /// Vault's USDC pool account.
     #[account(mut)]
+    /// CHECK: manually validated in the handler (mint match / owner / authority)
     pub vault_dividend: AccountInfo<'info>,
+    /// CHECK: manually validated in the handler (mint match / owner / authority)
     pub xstock_mint: AccountInfo<'info>,
+    /// CHECK: client passes the xStock mint's token program (v3 or 2022).
+    pub token_program: AccountInfo<'info>,
+    /// CHECK: the USDC (v3) token program — used for the dividend payout.
+    pub usdc_token_program: AccountInfo<'info>,
 }
 
 #[derive(Accounts)]
@@ -504,9 +530,14 @@ pub struct TriggerDividend<'info> {
     #[account(mut)]
     pub vault: Account<'info, Vault>,
     #[account(mut)]
+    /// CHECK: manually validated in the handler (mint match / owner / authority)
     pub admin_dividend: AccountInfo<'info>,
     #[account(mut)]
+    /// CHECK: manually validated in the handler (mint match / owner / authority)
     pub vault_dividend: AccountInfo<'info>,
+    pub system_program: Program<'info, System>,
+    /// CHECK: the USDC (v3) token program.
+    pub token_program: AccountInfo<'info>,
 }
 
 #[derive(Accounts)]
@@ -522,9 +553,13 @@ pub struct ClaimDividend<'info> {
     )]
     pub user_state: Account<'info, UserState>,
     #[account(mut)]
+    /// CHECK: manually validated in the handler (mint match / owner / authority)
     pub user_dividend: AccountInfo<'info>,
     #[account(mut)]
+    /// CHECK: manually validated in the handler (mint match / owner / authority)
     pub vault_dividend: AccountInfo<'info>,
+    /// CHECK: the USDC (v3) token program.
+    pub token_program: AccountInfo<'info>,
 }
 
 #[derive(Accounts)]

@@ -1,0 +1,15 @@
+import { PublicKey } from "@solana/web3.js";
+const PROGRAM = new PublicKey("LuTgK5iC7MvcnWGeJTsXpZH6bHZ4Cf95m333U8ed9kA");
+const AUTH = new PublicKey("4KTQiDUyvnkWyK7Vs4hnAp54UZecu3Vo1jku3JQ6kHWi");
+const AAPLX = new PublicKey("XsbEhLAtcf6HdfpFZ5xEMdqW8nfAvcsP5bdudRLJzJp");
+const USDC = new PublicKey("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v");
+const pda = (seeds) => PublicKey.findProgramAddressSync(seeds, PROGRAM);
+const [vault] = pda([Buffer.from("vault"), AUTH.toBuffer()]);
+const [vaultXstock] = pda([Buffer.from("vault_xstock"), vault.toBuffer()]);
+const [vaultDividend] = pda([Buffer.from("vault_dividend"), vault.toBuffer()]);
+console.log("authority:      " + AUTH.toBase58());
+console.log("vault:          " + vault.toBase58());
+console.log("vault_xstock  = " + vaultXstock.toBase58() + "   <-- AAPLx deposit lands here");
+console.log("vault_dividend= " + vaultDividend.toBase58() + "   <-- USDC pool");
+console.log("AAPLx mint:     " + AAPLX.toBase58());
+console.log("USDC mint:      " + USDC.toBase58());

@@ -3,17 +3,21 @@
 //   initialize → (client creates vault ATAs) → deposit → trigger → claim → withdraw
 const {
   Connection, Keypair, PublicKey, SystemProgram, Transaction,
+  TransactionInstruction,
 } = require("@solana/web3.js");
 const { Program, AnchorProvider, BN } = require("@coral-xyz/anchor");
 const {
-  TOKEN_PROGRAM_ID, getAssociatedTokenAddressSync, createMint, mintTo,
+  TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, getAssociatedTokenAddressSync,
+  createMint, mintTo,
   createAssociatedTokenAccountIdempotent,
 } = require("@solana/spl-token");
+const { sendAndConfirmTransaction } = require("@solana/web3.js");
 const fs = require("fs");
 
 const idl = require("./target/idl/streamdividend.json");
 const PROGRAM = new PublicKey("LuTgK5iC7MvcnWGeJTsXpZH6bHZ4Cf95m333U8ed9kA");
 const TOKEN_PROG = new PublicKey(TOKEN_PROGRAM_ID);
+const T2022_PROG = new PublicKey(TOKEN_2022_PROGRAM_ID);
 const SYS_PROG = SystemProgram.programId;
 
 const PAYER = Keypair.fromSecretKey(
@@ -33,16 +37,19 @@ function pda(seeds) {
 }
 
 async function setupTokens() {
-  // v3 mints at 6 decimals; the program dispatches by owner, so v3 is a valid
-  // stand-in for AAPLx (Token-2022) in the local e2e.
-  const xstockMint = await createMint(conn, PAYER, PAYER.publicKey, null, 6);
+  // xStock = REAL Token-2022 mint (6 dec to keep the invariant math); USDC = v3.
+  // This matches mainnet reality: AAPLx is Token-2022, USDC is v3, and the
+  // program dispatches the token program from the mint owner.
+  const xstockMint = await createMint(
+    conn, PAYER, PAYER.publicKey, null, 6, undefined, undefined, TOKEN_2022_PROGRAM_ID
+  );
   const usdcMint = await createMint(conn, PAYER, PAYER.publicKey, null, 6);
-  await createAssociatedTokenAccountIdempotent(conn, PAYER, xstockMint, PAYER.publicKey);
+  await createAssociatedTokenAccountIdempotent(conn, PAYER, xstockMint, PAYER.publicKey, undefined, TOKEN_2022_PROGRAM_ID);
   await createAssociatedTokenAccountIdempotent(conn, PAYER, usdcMint, PAYER.publicKey);
-  const xAta = getAssociatedTokenAddressSync(xstockMint, PAYER.publicKey);
+  const xAta = getAssociatedTokenAddressSync(xstockMint, PAYER.publicKey, false, TOKEN_2022_PROGRAM_ID);
   const uAta = getAssociatedTokenAddressSync(usdcMint, PAYER.publicKey);
   const ONE_M = 1_000_000 * 1_000_000;
-  await mintTo(conn, PAYER, xstockMint, xAta, PAYER.publicKey, ONE_M);
+  await mintTo(conn, PAYER, xstockMint, xAta, PAYER.publicKey, ONE_M, undefined, undefined, TOKEN_2022_PROGRAM_ID);
   await mintTo(conn, PAYER, usdcMint, uAta, PAYER.publicKey, ONE_M);
   return { xstockMint, usdcMint };
 }
@@ -55,11 +62,29 @@ async function main() {
   console.log("USDC mint:  ", usdcMint.toBase58());
 
   const [vault] = pda(["vault", auth.toBuffer()]);
-  const vaultXstock = getAssociatedTokenAddressSync(xstockMint, vault);
-  const vaultDividend = getAssociatedTokenAddressSync(usdcMint, vault);
+  const vaultXstock = getAssociatedTokenAddressSync(xstockMint, vault, true, TOKEN_2022_PROGRAM_ID);
+  const vaultDividend = getAssociatedTokenAddressSync(usdcMint, vault, true);
   const [userState] = pda(["user", vault.toBuffer(), auth.toBuffer()]);
-  const userXstock = getAssociatedTokenAddressSync(xstockMint, auth);
+  const userXstock = getAssociatedTokenAddressSync(xstockMint, auth, false, TOKEN_2022_PROGRAM_ID);
   const userDividend = getAssociatedTokenAddressSync(usdcMint, auth);
+
+  // Hand-built CreateIdempotent (data=[1]) with the canonical ATA + the
+  // mint's token program. (The 0.4.15 WithDerivation helper drops the token
+  // program from the seed derivation, so it produces the WRONG address for a
+  // Token-2022 mint — on-chain ATA program rejects it.)
+  const A_TOKEN = new PublicKey("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
+  const ataIx = (ata, owner, mint, tokenProg) => new TransactionInstruction({
+    keys: [
+      { pubkey: PAYER.publicKey, isSigner: true, isWritable: true },
+      { pubkey: ata, isSigner: false, isWritable: true },
+      { pubkey: owner, isSigner: false, isWritable: false },
+      { pubkey: mint, isSigner: false, isWritable: false },
+      { pubkey: SYS_PROG, isSigner: false, isWritable: false },
+      { pubkey: tokenProg, isSigner: false, isWritable: false },
+    ],
+    programId: A_TOKEN,
+    data: Buffer.from([1]),
+  });
 
   const results = [];
   const step = (name, fn) =>
@@ -78,17 +103,28 @@ async function main() {
 
   console.log("\n=== 2. create vault ATAs (client-side, idempotent) ===");
   await step("vault xStock ATA", () =>
-    createAssociatedTokenAccountIdempotent(conn, PAYER, xstockMint, vault)
+    (async () => {
+      const ix = ataIx(vaultXstock, vault, xstockMint, TOKEN_2022_PROGRAM_ID);
+      const tx = new Transaction().add(ix);
+      const r = await sendAndConfirmTransaction(conn, tx, [PAYER]);
+      return r;
+    })()
   );
   await step("vault USDC ATA", () =>
-    createAssociatedTokenAccountIdempotent(conn, PAYER, usdcMint, vault)
+    (async () => {
+      const ix = ataIx(vaultDividend, vault, usdcMint, TOKEN_PROG);
+      const tx = new Transaction().add(ix);
+      const r = await sendAndConfirmTransaction(conn, tx, [PAYER]);
+      return r;
+    })()
   );
 
   console.log("\n=== 3. deposit 100 xStock ===");
   await step("deposit 100 xStock", () =>
     program.methods.deposit(new BN(100 * 1e6)).accounts({
       user: auth, vault, userState,
-      userXstock, vaultXstock, xstockMint,
+      userXstock, vaultXstock, xstockMint, systemProgram: SYS_PROG,
+      tokenProgram: TOKEN_2022_PROGRAM_ID,
     }).rpc()
   );
 
@@ -96,7 +132,8 @@ async function main() {
   await step("triggerDividend 50 USDC", () =>
     program.methods.triggerDividend(new BN(50 * 1e6)).accounts({
       authority: auth, vault,
-      adminDividend: userDividend, vaultDividend,
+      adminDividend: userDividend, vaultDividend, systemProgram: SYS_PROG,
+      tokenProgram: TOKEN_PROG,
     }).rpc()
   );
 
@@ -105,15 +142,18 @@ async function main() {
     program.methods.claimDividend().accounts({
       user: auth, vault, userState,
       userDividend, vaultDividend,
+      tokenProgram: TOKEN_PROG,
     }).rpc()
   );
 
   console.log("\n=== 6. withdraw 50 shares (half) ===");
-  await step("withdraw 50 shares", () =>
+  await step("withdraw 50 shares (half)", () =>
     program.methods.withdraw(new BN(50 * 1e6)).accounts({
       user: auth, vault, userState,
       userXstock, vaultXstock, userDividend, vaultDividend,
       xstockMint,
+      tokenProgram: TOKEN_2022_PROGRAM_ID,
+      usdcTokenProgram: TOKEN_PROG,
     }).rpc()
   );
 
@@ -121,7 +161,8 @@ async function main() {
   await step("deposit 20 xStock after half-withdraw", () =>
     program.methods.deposit(new BN(20 * 1e6)).accounts({
       user: auth, vault, userState,
-      userXstock, vaultXstock, xstockMint,
+      userXstock, vaultXstock, xstockMint, systemProgram: SYS_PROG,
+      tokenProgram: TOKEN_2022_PROGRAM_ID,
     }).rpc()
   );
 

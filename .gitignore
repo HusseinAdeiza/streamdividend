@@ -1,2 +1,17 @@
+# build artifacts
 target/
+*.so
+
+# dependencies
 node_modules/
+
+# local validator / test ledgers (large, local-only)
+test-ledger/
+**/test-ledger/
+
+# secrets (never commit keypairs, ledgers, or env)
+*.key
+*.keypair.json
+id.json
+.env
+.env.*
