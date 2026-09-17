@@ -13,7 +13,11 @@ no-entrypoint = []
 no-idl = []
 no-log-ix-name = []
 cpi = ["no-entrypoint"]
-default = []
+# Default: ship the minimal binary (no embedded IDL, no instruction-name
+# syscalls). The IDL JSON lives in target/idl/streamdividend.json (built
+# once with the default-features build) — clients use the file, not the
+# embedded copy. Saves ~44 KB of deploy rent.
+default = ["no-idl", "no-log-ix-name"]
 
 [dependencies]
 js-sys = "=0.3.69"
