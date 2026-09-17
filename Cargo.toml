@@ -9,6 +9,13 @@ resolver = "2"
 # AbiEnumVisitor codegen over SBF's 4096-byte stack frame limit (verified
 # non-fatal but warns on every build; runtime math is checked explicitly).
 overflow-checks = false
+# Size optimization: shrink the .so to lower buffer rent (the one-time
+# upgrade working-capital requirement). LTO + opt-level z + single
+# codegen unit; panic=abort is standard for SBF.
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
 
 [workspace.dependencies]
 anchor-lang = "0.29.0"
