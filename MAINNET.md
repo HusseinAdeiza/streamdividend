@@ -29,10 +29,44 @@
 2. Hand-built SPL `transfer` missing the 4th account (the token program) → CPI "An account required by the instruction is missing / Unknown program Tokenkeg…". Added `token_program` context account to Deposit/Withdraw/ClaimDividend/TriggerDividend.
 3. Hand-built `transfer` authority `AccountMeta::new(*authority, false)` → for a CPI, SPL token program needs `is_signer=true` on the authority (else `MissingRequiredSignature`). Fixed to `true`.
 
-## Verification status
-- **Local e2e: 8/8 PASS with a REAL Token-2022 xStock mint** (matches AAPLx) + v3 USDC, both invariants hold. The full deposit / trigger / claim / withdraw flow is verified against the real token path mainnet uses.
-- The binary deployed to mainnet is the exact one that passed this e2e.
-- Earlier "8/8" runs used a v3 stand-in xStock mint; the T2022 path is now independently proven.
+## Real-AAPLx finding (2026-09-17) — DEPLOYED binary cannot service real AAPLx
+- **Verified on mainnet-beta (read-only sims):** real Backed xStock `AAPLx`
+  (`XsbEhLAtcf6HdfpFZ5xEMdqW8nfAvcsP5bdudRLJzJp`, Token-2022 with
+  `permanentDelegate` + `confidentialTransferMint` extensions) **rejects plain
+  `Transfer` with `Custom 31 = MintRequiredForTransfer`** and **accepts
+  `TransferChecked`**. So the live program (plain `Transfer`) cannot accept or
+  return real AAPLx. A vault holding it would lock user deposits.
+- **Earlier "8/8 PASS with a real T2022 mint" was a FALSE green:** the e2e mints
+  a *bare* T2022 mint (no extensions), so plain `Transfer` worked there. It never
+  exercised real AAPLx.
+- **The on-chain binary is the pre-fix build.** On-chain ELF sha256
+  `6876d0e577ca45ab5b95f8b0fcaa1b725a244fc9f4f12c886b1157ac15af5945`
+  (305,384 B, git HEAD `5933fc4`). The fixed `.so` was un-deployed.
+
+## The correct fix (in tree, local-verified, NOT yet on mainnet)
+1. `token_ix.rs` `transfer_checked`: SPL `TransferChecked` is instruction tag
+   **12** (NOT 18 — 18 is `InitializeAccount3`), and the account order is
+   **`from, mint, to, authority`** (NOT `from, to, mint, …`). The wrong order
+   made the token program compare `to.mint` vs `mint` → `Custom 3 = MintMismatch`.
+   No 5th "token program" account is passed in the instruction (it's the
+   `program_id`); `invoke_signed` matches context accounts **by pubkey**, so the
+   token program is already present in the call-site slices.
+2. `lib.rs` (already in tree): read `decimals` from the mint, require
+   `dividend_mint == vault.dividend_mint`, and use `transfer_checked` on every
+   token leg (deposit / withdraw / trigger / claim).
+- **Local e2e (new binary, same program ID on a local validator): 8/8 PASS**,
+  both invariants hold. Built via `anchor build`; the one
+  `Stack offset of 4608 exceeded max offset of 4096` line is a **non-fatal**
+  post-link warning that is ALSO in the live on-chain binary (exit 0; it's dead
+  solana-program `AbiEnumVisitor` codegen, never executed).
+
+## To put the fix on mainnet (NOT done — awaiting funding decision)
+- Cost: ProgramData must be `extend`ed by the new-build size delta, then `Upgrade`
+  from a buffer. Peak wallet need ≈ 1.20 SOL top-up, net ≈ 0.027 SOL + fees.
+- Or **close** to reclaim the ProgramData rent (~1.5522 SOL) + wallet — the vault
+  is empty (totalShares=0), so nothing is owed.
+- Do NOT ship the "deposit real AAPLx" claim until the fixed binary is upgraded
+  on mainnet.
 
 ## Mainnet gotchas hit (for reference)
 - `@solana/spl-token@0.4.15` `getAssociatedTokenAddressSync(mint, owner, allowOwnerOffCurve, tokenProgram)`: 3rd arg is `allowOwnerOffCurve` (bool), 4th is the token program. For a PDA (off-curve) owner you MUST pass `allowOwnerOffCurve=true`. The app was passing the token program as the 3rd arg → 4 tsc errors + runtime `TokenOwnerOffCurveError`.

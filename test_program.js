@@ -132,8 +132,8 @@ async function main() {
   await step("triggerDividend 50 USDC", () =>
     program.methods.triggerDividend(new BN(50 * 1e6)).accounts({
       authority: auth, vault,
-      adminDividend: userDividend, vaultDividend, systemProgram: SYS_PROG,
-      tokenProgram: TOKEN_PROG,
+      adminDividend: userDividend, vaultDividend, dividendMint: usdcMint,
+      systemProgram: SYS_PROG, tokenProgram: TOKEN_PROG,
     }).rpc()
   );
 
@@ -141,7 +141,7 @@ async function main() {
   await step("claimDividend", () =>
     program.methods.claimDividend().accounts({
       user: auth, vault, userState,
-      userDividend, vaultDividend,
+      userDividend, vaultDividend, dividendMint: usdcMint,
       tokenProgram: TOKEN_PROG,
     }).rpc()
   );
@@ -151,7 +151,7 @@ async function main() {
     program.methods.withdraw(new BN(50 * 1e6)).accounts({
       user: auth, vault, userState,
       userXstock, vaultXstock, userDividend, vaultDividend,
-      xstockMint,
+      xstockMint, dividendMint: usdcMint,
       tokenProgram: TOKEN_2022_PROGRAM_ID,
       usdcTokenProgram: TOKEN_PROG,
     }).rpc()

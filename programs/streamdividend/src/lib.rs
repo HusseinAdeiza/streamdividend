@@ -87,6 +87,15 @@ fn mint_token_program(mint: &AccountInfo) -> Result<&'static Pubkey> {
     }
 }
 
+/// Decimals field of a mint (data byte 44: 4 + 32 mint_authority + 8 supply).
+fn mint_decimals(mint: &AccountInfo) -> Result<u8> {
+    let d = mint.try_borrow_data()?;
+    if d.len() < 45 {
+        return Err(ErrorCode::InvalidTokenAccount.into());
+    }
+    Ok(d[44])
+}
+
 /// Mint field of a token account (bytes 0..32 of account data).
 fn token_account_mint(acc: &AccountInfo) -> Result<Pubkey> {
     let d = acc.try_borrow_data()?;
@@ -141,18 +150,24 @@ pub mod streamdividend {
         }
 
         // Transfer xStock from the user's account to the vault account.
-        let ix = transfer(
+        // TransferChecked: required for Token-2022 mints with extensions
+        // (e.g. real AAPLx); also valid on Token-v3.
+        let decimals = mint_decimals(&ctx.accounts.xstock_mint)?;
+        let ix = transfer_checked(
             token_program,
             &ctx.accounts.user_xstock.key(),
             &ctx.accounts.vault_xstock.key(),
+            &ctx.accounts.xstock_mint.key(),
             &ctx.accounts.user.key(),
             amount,
+            decimals,
         );
         invoke_signed(
             &ix,
             &[
                 ctx.accounts.user_xstock.to_account_info(),
                 ctx.accounts.vault_xstock.to_account_info(),
+                ctx.accounts.xstock_mint.to_account_info(),
                 ctx.accounts.user.to_account_info(),
                 ctx.accounts.token_program.to_account_info(),
             ],
@@ -195,6 +210,10 @@ pub mod streamdividend {
         let user_state = &mut ctx.accounts.user_state;
         require!(user_state.shares >= shares, ErrorCode::InsufficientShares);
         let token_program = mint_token_program(&ctx.accounts.xstock_mint)?;
+        require!(
+            ctx.accounts.dividend_mint.key() == vault.dividend_mint,
+            ErrorCode::InvalidTokenAccount
+        );
 
         let bump = vault.bump;
         let auth_bytes = vault.authority.to_bytes();
@@ -203,18 +222,21 @@ pub mod streamdividend {
         // 1) Pay out any accrued dividends before burning shares (USDC = v3).
         let earned = earned_amount(user_state, vault)?;
         if earned > 0 {
-            let ix = transfer(
+            let ix = transfer_checked(
                 &TOKEN_PROGRAM_ID,
                 &ctx.accounts.vault_dividend.key(),
                 &ctx.accounts.user_dividend.key(),
+                &ctx.accounts.dividend_mint.key(),
                 &vault_key,
                 earned,
+                mint_decimals(&ctx.accounts.dividend_mint)?,
             );
             invoke_signed(
                 &ix,
                 &[
                     ctx.accounts.vault_dividend.to_account_info(),
                     ctx.accounts.user_dividend.to_account_info(),
+                    ctx.accounts.dividend_mint.to_account_info(),
                     vault_info.clone(),
                     ctx.accounts.usdc_token_program.to_account_info(),
                 ],
@@ -237,18 +259,21 @@ pub mod streamdividend {
         user_state.shares = user_state.shares.checked_sub(shares).ok_or(ErrorCode::Overflow)?;
 
         // 3) Return xStock to the user (v3 or 2022 dispatch).
-        let ix = transfer(
+        let ix = transfer_checked(
             token_program,
             &ctx.accounts.vault_xstock.key(),
             &ctx.accounts.user_xstock.key(),
+            &ctx.accounts.xstock_mint.key(),
             &vault_key,
             xstock_out,
+            mint_decimals(&ctx.accounts.xstock_mint)?,
         );
         invoke_signed(
             &ix,
             &[
                 ctx.accounts.vault_xstock.to_account_info(),
                 ctx.accounts.user_xstock.to_account_info(),
+                ctx.accounts.xstock_mint.to_account_info(),
                 vault_info.clone(),
                 ctx.accounts.token_program.to_account_info(),
             ],
@@ -274,19 +299,26 @@ pub mod streamdividend {
         let vault = &mut ctx.accounts.vault;
         require!(ctx.accounts.authority.key() == vault.authority, ErrorCode::Unauthorized);
         require!(vault.total_shares > 0, ErrorCode::NoShares);
+        require!(
+            ctx.accounts.dividend_mint.key() == vault.dividend_mint,
+            ErrorCode::InvalidTokenAccount
+        );
 
-        let ix = transfer(
+        let ix = transfer_checked(
             &TOKEN_PROGRAM_ID,
             &ctx.accounts.admin_dividend.key(),
             &ctx.accounts.vault_dividend.key(),
+            &ctx.accounts.dividend_mint.key(),
             &ctx.accounts.authority.key(),
             amount,
+            mint_decimals(&ctx.accounts.dividend_mint)?,
         );
         invoke_signed(
             &ix,
             &[
                 ctx.accounts.admin_dividend.to_account_info(),
                 ctx.accounts.vault_dividend.to_account_info(),
+                ctx.accounts.dividend_mint.to_account_info(),
                 ctx.accounts.authority.to_account_info(),
                 ctx.accounts.token_program.to_account_info(),
             ],
@@ -321,6 +353,10 @@ pub mod streamdividend {
     pub fn claim_dividend(ctx: Context<ClaimDividend>) -> Result<()> {
         let amount = earned_amount(&ctx.accounts.user_state, &ctx.accounts.vault)?;
         require!(amount > 0, ErrorCode::NothingToClaim);
+        require!(
+            ctx.accounts.dividend_mint.key() == ctx.accounts.vault.dividend_mint,
+            ErrorCode::InvalidTokenAccount
+        );
 
         let vault_key = ctx.accounts.vault.key();
         let vault_info = ctx.accounts.vault.to_account_info();
@@ -328,18 +364,21 @@ pub mod streamdividend {
         let bump = vault.bump;
         let auth_bytes = vault.authority.to_bytes();
         let seeds: &[&[u8]] = &[b"vault", auth_bytes.as_ref(), &[bump]];
-        let ix = transfer(
+        let ix = transfer_checked(
             &TOKEN_PROGRAM_ID,
             &ctx.accounts.vault_dividend.key(),
             &ctx.accounts.user_dividend.key(),
+            &ctx.accounts.dividend_mint.key(),
             &vault_key,
             amount,
+            mint_decimals(&ctx.accounts.dividend_mint)?,
         );
         invoke_signed(
             &ix,
             &[
                 ctx.accounts.vault_dividend.to_account_info(),
                 ctx.accounts.user_dividend.to_account_info(),
+                ctx.accounts.dividend_mint.to_account_info(),
                 vault_info.clone(),
                 ctx.accounts.token_program.to_account_info(),
             ],
@@ -517,6 +556,9 @@ pub struct Withdraw<'info> {
     pub vault_dividend: AccountInfo<'info>,
     /// CHECK: manually validated in the handler (mint match / owner / authority)
     pub xstock_mint: AccountInfo<'info>,
+    /// The USDC dividend mint (Token-v3).
+    /// CHECK: manually validated in the handler (must equal vault.dividend_mint).
+    pub dividend_mint: AccountInfo<'info>,
     /// CHECK: client passes the xStock mint's token program (v3 or 2022).
     pub token_program: AccountInfo<'info>,
     /// CHECK: the USDC (v3) token program — used for the dividend payout.
@@ -535,6 +577,9 @@ pub struct TriggerDividend<'info> {
     #[account(mut)]
     /// CHECK: manually validated in the handler (mint match / owner / authority)
     pub vault_dividend: AccountInfo<'info>,
+    /// The USDC dividend mint (Token-v3).
+    /// CHECK: manually validated in the handler (must equal vault.dividend_mint).
+    pub dividend_mint: AccountInfo<'info>,
     pub system_program: Program<'info, System>,
     /// CHECK: the USDC (v3) token program.
     pub token_program: AccountInfo<'info>,
@@ -558,6 +603,9 @@ pub struct ClaimDividend<'info> {
     #[account(mut)]
     /// CHECK: manually validated in the handler (mint match / owner / authority)
     pub vault_dividend: AccountInfo<'info>,
+    /// The USDC dividend mint (Token-v3).
+    /// CHECK: manually validated in the handler (must equal vault.dividend_mint).
+    pub dividend_mint: AccountInfo<'info>,
     /// CHECK: the USDC (v3) token program.
     pub token_program: AccountInfo<'info>,
 }

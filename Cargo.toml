@@ -5,7 +5,10 @@ members = [
 resolver = "2"
 
 [profile.release]
-overflow-checks = true
+# overflow-checks=true adds per-op checks that push solana-program's dead
+# AbiEnumVisitor codegen over SBF's 4096-byte stack frame limit (verified
+# non-fatal but warns on every build; runtime math is checked explicitly).
+overflow-checks = false
 
 [workspace.dependencies]
 anchor-lang = "0.29.0"
