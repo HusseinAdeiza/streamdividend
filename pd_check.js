@@ -1,0 +1,34 @@
+// Full SOL accounting + ProgramData size check (does it fit the new, larger .so?).
+const { Connection, Keypair, PublicKey } = require("@solana/web3.js");
+const fs = require("fs");
+(async () => {
+  const c = new Connection("https://api.mainnet-beta.solana.com", "confirmed");
+  const AUTH = Keypair.fromSecretKey(new Uint8Array(JSON.parse(fs.readFileSync("/root/.config/solana/id.json", "utf8"))));
+  const wallet = AUTH.publicKey;
+  const prog = new PublicKey("LuTgK5iC7MvcnWGeJTsXpZH6bHZ4Cf95m333U8ed9kA");
+  const loader = new PublicKey("BPFLoaderUpgradeab1e11111111111111111111111");
+  const [pd] = PublicKey.findProgramAddressSync([Buffer.from(prog.toBytes()), Buffer.from("ProgramData")], loader);
+  const pdAcc = await c.getAccountInfo(pd);
+  const pdBal = await c.getBalance(pd);
+  const newSo = fs.statSync("target/deploy/streamdividend.so").size;
+  const LAMPORTS_PER_BYTE = 1314;
+  const HEADER = 44;
+  const sol = (l) => l / 1e9;
+  console.log("ProgramData account DATA LENGTH :", pdAcc.data.length, "bytes");
+  console.log("  => can hold program of up to  :", pdAcc.data.length - HEADER, "bytes");
+  console.log("OLD .so                         :", 305384, "bytes");
+  console.log("NEW .so                         :", newSo, "bytes");
+  const fits = (pdAcc.data.length - HEADER) >= newSo;
+  console.log("NEW .so FITS in ProgramData?    :", fits ? "YES" : "NO — ProgramData too small, must recreate");
+  console.log("");
+  console.log("ProgramData balance (rent)      :", sol(pdBal).toFixed(6), "SOL");
+  console.log("  rent needed for NEW size      :", sol((HEADER + newSo) * LAMPORTS_PER_BYTE).toFixed(6), "SOL");
+  console.log("  rent held - needed (LOCKED)   :", sol(pdBal - (HEADER + newSo) * LAMPORTS_PER_BYTE).toFixed(6), "SOL  (only recoverable by closing program)");
+  console.log("");
+  console.log("=== So the upgrade needs from the WALLET: ===");
+  const bufferRent = (HEADER + newSo) * LAMPORTS_PER_BYTE;
+  console.log("temp buffer (returned after)    :", sol(bufferRent).toFixed(6), "SOL");
+  console.log("fees                            : ~0.0001 SOL");
+  console.log("ProgramData top-up              :", sol(Math.max(0, (HEADER+newSo)*LAMPORTS_PER_BYTE - pdBal)).toFixed(6), "SOL (permanent)");
+  console.log("=> wallet must hold ~", sol(bufferRent).toFixed(4), "SOL at send time, then it's returned.");
+})();

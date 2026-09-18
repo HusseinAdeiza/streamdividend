@@ -201,11 +201,13 @@ which is not reachable in the intended deployment. Info only.
     - H-B (1 base-unit deposit): still locks a 1-share position (info; user
       loses at most 1 base unit — pre-existing, cosmetic)
   - Net: 2 HIGH + 1 LOW eliminated, zero behavior regression.
-- **Mainnet:** NOT yet upgraded. Live binary is still the vulnerable
-  215,272 B (`83e25a99`). The new build is 5.6 KB larger, so the upgrade
-  expands the ProgramData allocation by ~28 KB (+~0.00015 SOL buffer
-  difference — one-time, fees + tiny rent delta). Program remains
-  upgradeable; the fix is a single `solana program deploy` when ready.
-  **Risk while live:** the vault has no deposits and the dividend pool is
-  empty, so F-1/F-1b cannot be exploited on mainnet today (no pool to drain,
-  no tokens to divert). Upgrade before any real deposits occur.
+- **Mainnet:** **UPGRADED & VERIFIED (slot 448180469).** Live binary is the
+  fixed **220,912 B** build (sha `abb733ccd66ac365`) — on-chain ProgramData
+  payload @ offset 45 is byte-identical to the local build (0 differing
+  bytes). F-1, F-1b, F-2 are all blocked on mainnet now.
+  - Upgrade path note: the PD account was pre-sized to 305,384 B (Data
+    Length), so no expansion was needed — only ~0.001 SOL in fees (buffer rent
+    refunded 1:1).
+  - **ProgramData layout gotcha for verification:** layout is tag(4)=3 +
+    slot(u64)@4 + Option<Pubkey> authority@12..45 (tag `01` + 32 B); program
+    payload starts at offset **45** (not 44/36). Use @45 when re-verifying.

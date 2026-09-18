@@ -2,14 +2,15 @@
 
 ## Program
 - **Program ID:** `LuTgK5iC7MvcnWGeJTsXpZH6bHZ4Cf95m333U8ed9kA`
-- **UPGRADED 2026-09-17:** ELF is now 215,272 B (compressed build, sha256 `83e25a99…`), TransferChecked-based — **real AAPLx works** (verified by mainnet sim, 33,733 CU). Old 305,384 B binary (sha `6876d0e5…`) was plain-Transfer and could not service real AAPLx.
+- **UPGRADED 2026-09-18 (SECURITY v3):** ELF is now **220,912 B** (fixed binary, sha256 `abb733ccd66ac365`), deployed slot **448180469** — F-1/F-1b (USDC pool drain + deposit diversion) and F-2 (dust trigger) are all blocked. Verified byte-identical on-chain (payload @ offset 45, 0 differing bytes). This supersedes the 09-17 `83e25a99…` (215,272 B) security release.
+- **HOW TO VERIFY ON-CHAIN:** ProgramData layout = tag(4)=3 + slot(u64)@4 + Option<Pubkey> auth@12..45; program payload starts at offset **45**. `sha256(payload[45:45+220912])` vs local `.so` must match.
 - ProgramData: `3EVmVdXM8WoMZG2jd527Wn4Vhmm222RXLTfnRthszCYw` (1.55222956 SOL rent, **recoverable** via close; allocation kept at 305,429 B, new ELF zero-padded per loader)
 - Upgrade authority: `4KTQiDUyvnkWyK7Vs4hnAp54UZecu3Vo1jku3JQ6kHWi` (still upgradeable)
 
 ## Deployer / vault authority wallet
 - `4KTQiDUyvnkWyK7Vs4hnAp54UZecu3Vo1jku3JQ6kHWi`
 - Keyfile: `~/.config/solana/id.json` (NOT `target/deploy/streamdividend-keypair.json` — that's the program ID keypair, a different key)
-- Balance after deploy: ~0.06 SOL (covers vault init + fees)
+- Balance after deploy: ~1.15 SOL (buffer rent was refunded 1:1; only fees consumed). Sufficient for vault init + fees.
 
 ## Vault (live)
 - **Vault PDA:** `2vsxDXuanJxrWtBzhun6yaCidHZxVNdFEobtAC3CKwM2`
