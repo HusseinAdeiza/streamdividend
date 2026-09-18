@@ -105,6 +105,15 @@ fn token_account_mint(acc: &AccountInfo) -> Result<Pubkey> {
     Ok(Pubkey::new_from_array(d[0..32].try_into().unwrap()))
 }
 
+/// Wallet field of a token account (bytes 32..64 of account data).
+fn token_account_owner(acc: &AccountInfo) -> Result<Pubkey> {
+    let d = acc.try_borrow_data()?;
+    if d.len() < 64 {
+        return Err(ErrorCode::InvalidTokenAccount.into());
+    }
+    Ok(Pubkey::new_from_array(d[32..64].try_into().unwrap()))
+}
+
 #[program]
 pub mod streamdividend {
     use super::*;
@@ -137,10 +146,14 @@ pub mod streamdividend {
         let token_program = mint_token_program(&ctx.accounts.xstock_mint)?;
 
         // Defensive: both accounts must be for the vault's xStock mint and
-        // owned by that mint's token program (prevents cross-mint deposits).
+        // owned by that mint's token program (prevents cross-mint deposits),
+        // and their data-owner (wallet) fields must be the vault PDA / the
+        // signing user (prevents deposit diversion to a third-party account).
         require!(*ctx.accounts.vault_xstock.owner == *token_program, ErrorCode::InvalidTokenAccount);
         require!(token_account_mint(&ctx.accounts.vault_xstock)? == vault.xstock_mint, ErrorCode::InvalidTokenAccount);
         require!(token_account_mint(&ctx.accounts.user_xstock)? == vault.xstock_mint, ErrorCode::InvalidTokenAccount);
+        require!(token_account_owner(&ctx.accounts.vault_xstock)? == vault.key(), ErrorCode::InvalidTokenAccount);
+        require!(token_account_owner(&ctx.accounts.user_xstock)? == ctx.accounts.user.key(), ErrorCode::InvalidTokenAccount);
 
         // First deposit: snapshot the accumulator so the new depositor does
         // NOT claim dividends that were distributed before they joined.
@@ -210,6 +223,16 @@ pub mod streamdividend {
         let user_state = &mut ctx.accounts.user_state;
         require!(user_state.shares >= shares, ErrorCode::InsufficientShares);
         let token_program = mint_token_program(&ctx.accounts.xstock_mint)?;
+        // F-1 fix: pin the xStock mint and the data-owner (wallet) fields of
+        // both token accounts. Without these, a caller could pass the USDC
+        // mint + the vault's own USDC pool as "vault_xstock" and drain the
+        // dividend pool through the xStock-return leg (100x unit inflation).
+        require!(ctx.accounts.xstock_mint.key() == vault.xstock_mint, ErrorCode::InvalidTokenAccount);
+        require!(*ctx.accounts.vault_xstock.owner == *token_program, ErrorCode::InvalidTokenAccount);
+        require!(token_account_mint(&ctx.accounts.vault_xstock)? == vault.xstock_mint, ErrorCode::InvalidTokenAccount);
+        require!(token_account_mint(&ctx.accounts.user_xstock)? == vault.xstock_mint, ErrorCode::InvalidTokenAccount);
+        require!(token_account_owner(&ctx.accounts.vault_xstock)? == vault_key, ErrorCode::InvalidTokenAccount);
+        require!(token_account_owner(&ctx.accounts.user_xstock)? == ctx.accounts.user.key(), ErrorCode::InvalidTokenAccount);
         require!(
             ctx.accounts.dividend_mint.key() == vault.dividend_mint,
             ErrorCode::InvalidTokenAccount
@@ -331,6 +354,9 @@ pub mod streamdividend {
             .ok_or(ErrorCode::Overflow)?
             .checked_div(vault.total_shares as u128)
             .ok_or(ErrorCode::Overflow)?;
+        // F-2 fix: reject dust triggers that truncate to 0 per-share accrual —
+        // those would strand USDC in the pool where no holder can ever claim it.
+        require!(per_share > 0, ErrorCode::ZeroAmount);
         vault.dividends_per_share = vault
             .dividends_per_share
             .checked_add(per_share)
