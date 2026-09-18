@@ -179,3 +179,33 @@ which is not reachable in the intended deployment. Info only.
    upgrade mainnet — the program is still upgradeable, so this is a one-`solana
    program deploy` fix that also **strengthens the hackathon narrative** ("we
    audited it ourselves and found + fixed 2 HIGHs before shipping").
+
+---
+
+## Fix implemented (commit `6a6b097`) — status
+- **F-1 + F-1b:** fixed in source (mint-pin + `token_account_owner` data-owner
+  checks in `withdraw` and `deposit`). Built clean: **220,912 B** (sha
+  `abb733cc…`), +5.6 KB over the live 215,272 B binary.
+- **F-2:** fixed in source — `triggerDividend` now rejects `per_share == 0`
+  (dust triggers can no longer strand USDC). (No `rescuePool` added — with the
+  rejection, dust can never enter the pool; a sweep ix is only needed if dust
+  already exists, which on mainnet it does not: the vault has no users yet.)
+- **Re-verification (DONE, local validator, fresh deploy of `abb733cc`):**
+  - `node test_program.js` → **8/8 PASS** (invariants exact).
+  - `node audit_poc.js` against the FIXED binary:
+    - F-1 (USDC drain): **blocked — `Invalid token account`**
+    - F-1b (deposit diversion): **blocked — `Invalid token account`**
+    - F-2 (per-share dust trigger): **blocked — `Amount must be greater than zero`**
+    - H-A (rounding): exact at 10 xStock (no drift at normal sizes; sub-base
+      residue stays vault-side, dust only)
+    - H-B (1 base-unit deposit): still locks a 1-share position (info; user
+      loses at most 1 base unit — pre-existing, cosmetic)
+  - Net: 2 HIGH + 1 LOW eliminated, zero behavior regression.
+- **Mainnet:** NOT yet upgraded. Live binary is still the vulnerable
+  215,272 B (`83e25a99`). The new build is 5.6 KB larger, so the upgrade
+  expands the ProgramData allocation by ~28 KB (+~0.00015 SOL buffer
+  difference — one-time, fees + tiny rent delta). Program remains
+  upgradeable; the fix is a single `solana program deploy` when ready.
+  **Risk while live:** the vault has no deposits and the dividend pool is
+  empty, so F-1/F-1b cannot be exploited on mainnet today (no pool to drain,
+  no tokens to divert). Upgrade before any real deposits occur.
